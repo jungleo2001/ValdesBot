@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Valdes</title>
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --ink:#e5e7eb; --muted:#9ca3af; --accent:#22c55e; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial;
+      display: grid; place-items: center; height: 100dvh;
+    }
+    .app {
+      width: min(900px, 100%); height: min(900px, 100dvh);
+      display: grid; grid-template-rows: auto 1fr auto; gap: 10px; padding: 12px;
+    }
+    header {
+      display: flex; gap: 8px; align-items: center; justify-content: space-between;
+    }
+    header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+    .badge { font-size: 12px; color: var(--muted); }
+    .panel {
+      border: 1px solid #1f2937; background: var(--panel); border-radius: 12px; overflow: hidden;
+    }
+    #messages {
+      height: 100%; overflow-y: auto; padding: 16px; scroll-behavior: smooth;
+    }
+    .msg { display: grid; gap: 6px; margin-bottom: 14px; max-width: 80%; }
+    .msg.user { justify-self: end; text-align: right; }
+    .bubble {
+      padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word;
+    }
+    .user .bubble { background: #2563eb; color: white; border-top-right-radius: 6px; }
+    .bot .bubble { background: #374151; border-top-left-radius: 6px; }
+    .time { font-size: 12px; color: var(--muted); }
+    form#composer {
+      display: grid; grid-template-columns: 1fr auto auto auto; gap: 8px; padding: 10px; align-items: center;
+    }
+    input[type="text"] {
+      width: 100%; padding: 12px; background: #0b1220; color: var(--ink);
+      border: 1px solid #1f2937; border-radius: 10px;
+    }
+    button, label.button {
+      border: none; padding: 10px 14px; border-radius: 10px; cursor: pointer;
+      background: #1f2937; color: var(--ink);
+    }
+    button.primary { background: var(--accent); color: #06270f; font-weight: 700; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .sr-only { position:absolute; left:-9999px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Valdes<span class="badge"></span></h1>
+      <div class="row">
+        <span class="badge">El Chatbot</span>
+      </div>
+    </header>
+
+    <section class="panel" id="chat">
+      <div id="messages"></div>
+    </section>
+
+    <form id="composer" class="panel" autocomplete="off">
+      <input id="input" type="text" placeholder="Digite sua mensagem..." />
+      <label class="button" title="Anexar áudio (MP3/WAV/M4A)">
+        <input id="audio-file" type="file" accept="audio/*" class="sr-only" />
+        🎵 Áudio
+      </label>
+      <button id="mic" type="button" title="Gravar áudio">🎤</button>
+      <button id="send" class="primary" type="submit">Enviar</button>
+    </form>
+  </div>
+
+  <script>
+    const $messages = document.getElementById('messages');
+    const $input    = document.getElementById('input');
+    const $form     = document.getElementById('composer');
+    const $send     = document.getElementById('send');
+    const $mic      = document.getElementById('mic');
+    const $file     = document.getElementById('audio-file');
+
+    /** Estado simples de histórico para dar contexto ao modelo (role/content) */
+    const history = [
+      { role: 'system', content: 'Você é um assistente conciso e sarcástico (no bom sentido), respostas em PT-BR.' }
+    ];
+
+    function addMessage({ who, text }) {
+      const wrap = document.createElement('div');
+      wrap.className = `msg ${who}`;
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      const time = document.createElement('div');
+      time.className = 'time';
+      time.textContent = new Date().toLocaleTimeString();
+      wrap.appendChild(bubble);
+      wrap.appendChild(time);
+      $messages.appendChild(wrap);
+      $messages.scrollTop = $messages.scrollHeight;
+    }
+
+    async function sendTextMessage(text) {
+      if (!text.trim()) return;
+      addMessage({ who: 'user', text });
+      $input.value = '';
+      $send.disabled = true;
+
+      history.push({ role: 'user', content: text });
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history })
+        });
+        if (!res.ok) throw new Error('Falha na requisição');
+        const data = await res.json();
+        const reply = data.reply || '(sem resposta)';
+        addMessage({ who: 'bot', text: reply });
+        history.push({ role: 'assistant', content: reply });
+      } catch (err) {
+        addMessage({ who: 'bot', text: '⚠️ Erro: ' + err.message });
+      } finally {
+        $send.disabled = false;
+      }
+    }
+
+    $form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      sendTextMessage($input.value);
+    });
+
+    // Upload de arquivo de áudio → transcrever
+    $file.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      $send.disabled = true;
+      addMessage({ who: 'user', text: `🔈 Enviando áudio: ${file.name}` });
+
+      try {
+        const fd = new FormData();
+        fd.append('audio', file, file.name);
+        const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error('Falha na transcrição');
+        const data = await res.json();
+        const transcript = data.text?.trim() || '';
+        if (transcript) {
+          addMessage({ who: 'bot', text: '📝 Transcrição: ' + transcript });
+          // Opcional: já mandar para o chat como pergunta
+          await sendTextMessage(transcript);
+        } else {
+          addMessage({ who: 'bot', text: 'Não consegui transcrever esse áudio.' });
+        }
+      } catch (err) {
+        addMessage({ who: 'bot', text: '⚠️ Erro ao transcrever: ' + err.message });
+      } finally {
+        $send.disabled = false;
+        $file.value = '';
+      }
+    });
+
+    // Gravação pelo microfone (MediaRecorder) → envia para /api/transcribe
+    let mediaRecorder, chunks = [];
+    $mic.addEventListener('click', async () => {
+      try {
+        if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          chunks = [];
+          mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+          mediaRecorder.onstop = async () => {
+            const blob = new Blob(chunks, { type: 'audio/webm' });
+            const fd = new FormData();
+            fd.append('audio', blob, `gravacao-${Date.now()}.webm`);
+            $send.disabled = true;
+            addMessage({ who: 'user', text: '🎙️ Áudio gravado, transcrevendo...' });
+            try {
+              const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+              if (!res.ok) throw new Error('Falha na transcrição');
+              const data = await res.json();
+              const transcript = data.text?.trim() || '';
+              if (transcript) {
+                addMessage({ who: 'bot', text: '📝 Transcrição: ' + transcript });
+                await sendTextMessage(transcript);
+              } else {
+                addMessage({ who: 'bot', text: 'Não consegui transcrever o áudio.' });
+              }
+            } catch (err) {
+              addMessage({ who: 'bot', text: '⚠️ Erro: ' + err.message });
+            } finally {
+              $send.disabled = false;
+            }
+          };
+          mediaRecorder.start();
+          $mic.textContent = '⏹️ Parar';
+        } else {
+          mediaRecorder.stop();
+          $mic.textContent = '🎤';
+        }
+      } catch (err) {
+        addMessage({ who: 'bot', text: '⚠️ Sem acesso ao microfone: ' + err.message });
+      }
+    });
+
+    // Mensagem de boas-vindas
+    addMessage({ who: 'bot', text: '¡Bienvenido/a al asistente virtual del Ayuntamiento de Valdés!' });
+  </script>
+</body>
+</html>
